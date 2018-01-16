@@ -21,15 +21,18 @@ import logging
 import smtplib
 from email.mime.text import MIMEText
 
-# import py_compile
+import py_compile
 
 __VERSION__ = '2018.01.04'
-#py_compile.compile('config.py')
+__DIR__ = sys.path[0]
+__DELTADAY__ = 7
+
+py_compile.compile(os.path.join(__DIR__, 'config.py'))
 
 logging.basicConfig(level=logging.INFO,
                 format='%(asctime)s %(levelname)s %(message)s',
                 date_fmt='%a, %d %b %Y %H:%M:%S',
-                file_name='./CDNlog.log',
+                file_name=os.path.join(__DIR__, 'CDNlog.log'),
                 file_mode='w')
 '''
 console = logging.StreamHandler()
@@ -83,7 +86,7 @@ class CdnApi:
 
     def __init__(self):
         self.username = CDNinfo['username']
-        self.apiKey =  CDNinfo['apiKey']
+        self.apiKey = CDNinfo['apiKey']
         self.date = datetime.datetime.today().strftime("%a, %d %b %Y %H:%M:%S GMT")
         self.password = hmac.new(self.apiKey, self.date, hashlib.sha1).digest().encode('base64').rstrip()
 
@@ -176,15 +179,24 @@ def check_interval(fday, lday, today):
         _linterval = datetime.datetime.strptime(lday, "%Y-%m-%d")
 
         days = ( _linterval - _sinterval ).days
-        if days <= 13 and (_linterval- today).days >= 0 and _linterval >= _sinterval:
+        if days <= 13 and (today - _linterval).days >= 0 and _linterval >= _sinterval:
             return days
         else:
             return -1
     except:
         return -1
 
+def remove_file(targetDir):
+    for _file in os.listdir(targetDir):
+        _target_file = os.path.join(targetDir, _file)
+        _mtime = datetime.datetime.fromtimestamp(os.path.getmtime(_target_file))
+        now = datetime.datetime.now()
+        if (now - _mtime).days > __DELTADAY__:
+            os.remove(_target_file)
+            logging.info("\nRemove file " + _target_file + ", which time stamp is " + str(_mtime))
 
 def main():
+    sys.path.append(__DIR__)
     logging.info("\n")
     mailto_list = EMAILinfo['mailto_list']
     mail_host = EMAILinfo['mail_host']  # 设置服务器
@@ -207,7 +219,7 @@ def main():
         lday = arg.lday
 
 
-    vcc_directory = CDNinfo['vcc_directory']
+    vcc_directory = AWSinfo['vcc_directory']
     domain = CDNinfo['vcc_domain']
 
     cdn_log = CdnApi()
@@ -225,7 +237,7 @@ def main():
     for i in range(days):
         logurl = log_info.split("\"")[i * 14 + 19]
         pattern = re.compile(r'\d{4}-.+?gz')
-        logname = pattern.search(logurl).group()
+        logname = os.path.join(__DIR__, pattern.search(logurl).group())
         if False == download_log(logurl, logname):
             content = "\nCDN log file" + logname + "download fail!\nPlease login " + host_ip + "to check cdn_log.log and save CDN log manually."
             send_mail(mail_host, mail_user, mail_pass, mailto_list, "CDN log download fail!", content)
@@ -234,6 +246,8 @@ def main():
             content = "\nCDN log file" + logname + "upload fail!\nPlease login " + host_ip + "to check cdn_log.log and save CDN log manually."
             send_mail(mail_host, mail_user, mail_pass, mailto_list, "CDN log download fail!", content)
             sys.exit(1)
+
+    remove_file(__DIR__)
 
 if __name__ == '__main__':
     main()
