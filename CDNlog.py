@@ -21,19 +21,30 @@ import logging
 import smtplib
 from email.mime.text import MIMEText
 
-import py_compile
+# import py_compile
 
 __VERSION__ = '2018.01.04'
 __DIR__ = sys.path[0]
 __DELTADAY__ = 7
 
-py_compile.compile(os.path.join(__DIR__, 'config.py'))
+# py_compile.compile(os.path.join(__DIR__, 'config.py'))
+
+logger = logging.getLogger()
+logger.setLevel(logging.DEBUG)
+
+formatter = logging.Formatter('[%(levelname)s] %(message)s')
+
+# Create a file handler to store error messages
+fhdr = logging.FileHandler(os.path.join(__DIR__, 'CDNlog.log'), mode='w')
+fhdr.setLevel(logging.INFO)
+fhdr.setFormatter(formatter)
+
 
 logging.basicConfig(level=logging.INFO,
                 format='%(asctime)s %(levelname)s %(message)s',
-                date_fmt='%a, %d %b %Y %H:%M:%S',
-                file_name=os.path.join(__DIR__, 'CDNlog.log'),
-                file_mode='w')
+                datefmt='%a, %d %b %Y %H:%M:%S',
+                filename=os.path.join(__DIR__, 'CDNlog.log'),
+                filemode='w')
 '''
 console = logging.StreamHandler()
 console.setLevel(logging.INFO)
@@ -41,7 +52,6 @@ formatter = logging.Formatter('%(name)-12s: %(levelname)-8s %(message)s')
 console.setFormatter(formatter)
 logging.getLogger('').addHandler(console)
 '''
-
 class ProgressPercentage(object):
     """the progress of log uploading to S3"""
     def __init__(self, filename):
@@ -65,7 +75,7 @@ def send_mail(mail_host, mail_user, mail_pass, to_list, sub, content):
     """send alarm email when download or upload fail"""
     me = "CDN log downloader" + "<" + mail_user + ">"
     msg = MIMEText(content, _subtype='plain', _charset='gb2312')
-    msg['Subject'] = sub  # 设置主题
+    msg['Subject'] = sub  # ....
     msg['From'] = me
     msg['To'] = ";".join([to_list])
     try:
@@ -113,17 +123,21 @@ class CdnApi:
             req = urllib2.Request(url, _xml_parameters, headers)
             req.add_header('Content-Type', 'application/xml; charset=utf-8')
             req.add_header('Content-Length', len(_xml_parameters))
-            return urllib2.urlopen(req).read()
+            cdn_info = urllib2.urlopen(req).read()
+            if cdn_info.split("\"")[1] == "logs":
+                return cdn_info
+            else:
+                logging.error("Unexpected CDN log url, Please check the CDN API. Return info is ", cdn_info)
         except urllib2.HTTPError, e:
             logging.error("can't fetch log url, http error is\n")
             logging.error(e)
             return False
 
-def download_log(logurl, logname):
+def download_log(logurl, log_dir_name):
     try:
         f = urllib2.urlopen(logurl)
-        # with open("/opt/cdn-log/"+logname, "wb") as code:
-        with open(logname, "wb") as code:
+        # with open("/opt/cdn-log/"+log_dir_name, "wb") as code:
+        with open(log_dir_name, "wb") as code:
             code.write(f.read())
     except Exception, e:
         logging.error("log download fail\n")
@@ -155,15 +169,18 @@ class AwsObject:
         self.region_name = AWSinfo['region_name']
         self.metadata = AWSinfo['meta_url']
 
-    def s3_upload(self, logname, directory):
+    def s3_upload(self, log_dir, log_name, directory):
         """upload log to S3"""
         try:
+            s3_log = directory.format(log_name)
+            log_dir_name = os.path.join(log_dir, log_name)
             s3 = boto3.client('s3', aws_access_key_id=self.aws_access_key, aws_secret_access_key=self.aws_secret_key, region_name=self.region_name)
-            s3.upload_file(logname, "cdn-download-log", directory.format(logname), Callback=ProgressPercentage(logname))
+            s3.upload_file(log_dir_name, "cdn-download-log", directory.format(log_name), Callback=ProgressPercentage(log_dir_name))
         except Exception, e:
             logging.error("log upload to S3 fail\n")
             logging.error(e)
             return False
+        logging.info(log_dir_name + "log upload to S3 succeed\n")
         return True
 
     def get_ec2_ip(self):
@@ -174,11 +191,12 @@ class AwsObject:
 
 def check_interval(fday, lday, today):
     """Check if the input interval is within 14 days and no later than today"""
+
     try:
         _sinterval = datetime.datetime.strptime(fday, "%Y-%m-%d")
         _linterval = datetime.datetime.strptime(lday, "%Y-%m-%d")
 
-        days = ( _linterval - _sinterval ).days
+        days = (_linterval - _sinterval).days
         if days <= 13 and (today - _linterval).days >= 0 and _linterval >= _sinterval:
             return days
         else:
@@ -199,11 +217,11 @@ def main():
     sys.path.append(__DIR__)
     logging.info("\n")
     mailto_list = EMAILinfo['mailto_list']
-    mail_host = EMAILinfo['mail_host']  # 设置服务器
+    mail_host = EMAILinfo['mail_host']  # .....
     # mail_pop_host = EMAILinfo['mail_pop_host']
-    mail_user = EMAILinfo['mail_user']  # 用户名
-    mail_pass = EMAILinfo['mail_pass']  # 口令
-    # mail_postfix = EMAILinfo['mail_postfix']  # 发件箱的后缀
+    mail_user = EMAILinfo['mail_user']  # ...
+    mail_pass = EMAILinfo['mail_pass']  # ..
+    # mail_postfix = EMAILinfo['mail_postfix']  # ......
     lday = datetime.datetime.today() + datetime.timedelta(hours=8)
     fday = (lday - datetime.timedelta(days=1))
 
@@ -225,25 +243,29 @@ def main():
     cdn_log = CdnApi()
     aws = AwsObject()
     host_ip = aws.get_ec2_ip()
+
     log_info = cdn_log.get_logurl(fday, lday, domain)
-    if log_info.split("\"")[1] != "logs":
-        content = "\nFetch log url fail!\nPlease login " + host_ip + "to check cdn_log.log and save CDN log manually."
+    if log_info == False:
+    # if log_info.split("\"")[1] != "logs":
+        content = "\nFetch log url fail!\nPlease login " + host_ip + " to check cdn_log.log and save CDN log manually."
         send_mail(mail_host, mail_user, mail_pass, mailto_list, "CDN log download fail!", content)
         sys.exit(1)
 
-    logging.info("CDN log url is: \n")
-    logging.info(log_info)
+    logging.info("CDN log url is: " + log_info)
+    logging.info("Start to download " + str(days) + " days log, between " + fday + " and " + lday)
 
     for i in range(days):
         logurl = log_info.split("\"")[i * 14 + 19]
         pattern = re.compile(r'\d{4}-.+?gz')
-        logname = os.path.join(__DIR__, pattern.search(logurl).group())
-        if False == download_log(logurl, logname):
-            content = "\nCDN log file" + logname + "download fail!\nPlease login " + host_ip + "to check cdn_log.log and save CDN log manually."
+        logname = pattern.search(logurl).group()
+        log_dir_name = os.path.join(__DIR__, logname)
+        logging.info("log " + str(i+1) + ": logname is " + logname + ", logurl is " + logurl)
+        if False == download_log(logurl, log_dir_name):
+            content = "\nCDN log file" + log_dir_name + "download fail!\nPlease login " + host_ip + " to check cdn_log.log and save CDN log manually."
             send_mail(mail_host, mail_user, mail_pass, mailto_list, "CDN log download fail!", content)
             sys.exit(1)
-        if False == aws.s3_upload(logname, vcc_directory):
-            content = "\nCDN log file" + logname + "upload fail!\nPlease login " + host_ip + "to check cdn_log.log and save CDN log manually."
+        if False == aws.s3_upload(__DIR__, logname, vcc_directory):
+            content = "\nCDN log file" + log_dir_name + "upload fail!\nPlease login " + host_ip + "i to check cdn_log.log and save CDN log manually."
             send_mail(mail_host, mail_user, mail_pass, mailto_list, "CDN log download fail!", content)
             sys.exit(1)
 
@@ -258,5 +280,3 @@ if __name__ == '__main__':
 # s3 = boto3.resource('s3')
 # for bucket in s3.buckets.all():
 #    print(bucket.name)
-
-               #
